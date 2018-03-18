@@ -10,7 +10,7 @@ from threading import Thread
 from time import time
 
 import chess.pgn
-from typing import List
+from typing import List, Optional, Tuple
 
 from chess_zero.agent.player_chess import ChessPlayer
 from chess_zero.config import Config
@@ -53,19 +53,16 @@ class SupervisedLearningWorker:
         # noinspection PyAttributeOutsideInit
         self.idx = 0
         start_time = time()
-        with ProcessPoolExecutor(max_workers=7) as executor:
-            games = self.get_games_from_all_files()
-            for res in as_completed(
-                    [executor.submit(get_buffer, self.config, game) for game in games]):  # poisoned reference (memleak)
-                self.idx += 1
-                env, data = res.result()
-                self.save_data(data)
-                end_time = time()
-                logger.debug(f"game {self.idx:4} time={(end_time - start_time):.3f}s "
-                             f"halfmoves={env.num_halfmoves:3} {env.winner:12}"
-                             f"{' by resign ' if env.resigned else '           '}"
-                             f"{env.observation.split(' ')[0]}")
-                start_time = end_time
+        games = self.get_games_from_all_files()
+        for env, data in (get_buffer(self.config, game, last_moves_count=3) for game in games):
+            self.idx += 1
+            self.save_data(data)
+            end_time = time()
+            logger.debug(f"game {self.idx:4} time={(end_time - start_time):.3f}s "
+                         f"halfmoves={env.num_halfmoves:3} {env.winner:12}"
+                         f"{' by resign ' if env.resigned else '           '}"
+                         f"{env.observation.split(' ')[0]}")
+            start_time = end_time
 
         if len(self.buffer) > 0:
             self.flush_buffer()
@@ -123,24 +120,26 @@ def get_games_from_file(filename: str) -> List[chess.pgn.Game]:
     return games
 
 
-def clip_elo_policy(config, elo):
+def clip_elo_policy(config: Config, elo):
     return min(1, max(0, elo - config.play_data.min_elo_policy) / config.play_data.max_elo_policy)
     # 0 until min_elo, 1 after max_elo, linear in between
 
 
-def get_buffer(config, game: chess.pgn.Game) -> (ChessEnv, List[float]):
+def get_buffer(config: Config, game: chess.pgn.Game, last_moves_count: Optional[int] = None) -> \
+        (ChessEnv, List[Tuple[str, List[float], int]]):
     """
     Gets data to load into the buffer by playing a game using PGN data.
     :param Config config: config to use to play the game
     :param pgn.Game game: game to play
-    :return list(str,list(float)): data from this game for the SupervisedLearningWorker.buffer
+    :param last_moves_count: if specified, return only on last N moves
+    :return list(str,list(float),int): data from this game for the SupervisedLearningWorker.buffer
     """
     env = ChessEnv().reset()
     white = ChessPlayer(config, dummy=True)
     black = ChessPlayer(config, dummy=True)
     result = game.headers["Result"]
 
-    white_elo, black_elo = int(game.headers["WhiteElo"]), int(game.headers["BlackElo"])
+    white_elo, black_elo = int(game.headers.get("WhiteElo") or 1000), int(game.headers.get("BlackElo") or 1000)
     white_weight = clip_elo_policy(config, white_elo)
     black_weight = clip_elo_policy(config, black_elo)
 
@@ -173,7 +172,12 @@ def get_buffer(config, game: chess.pgn.Game) -> (ChessEnv, List[float]):
     white.finish_game(-black_win)
 
     data = []
-    for i in range(len(white.moves)):
+
+    first_move = 0
+    if last_moves_count is not None:
+        first_move = max(0, len(white.moves) - last_moves_count)
+
+    for i in range(first_move, len(white.moves)):
         data.append(white.moves[i])
         if i < len(black.moves):
             data.append(black.moves[i])
