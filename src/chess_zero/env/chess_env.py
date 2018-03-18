@@ -228,7 +228,7 @@ def check_current_planes(realfen, planes):
     return "".join(fakefen) == replace_tags_board(realfen)
 
 
-def canon_input_planes(fen):
+def canon_input_planes(fen) -> np.ndarray:
     """
 
     :param fen:
@@ -238,7 +238,7 @@ def canon_input_planes(fen):
     return all_input_planes(fen)
 
 
-def all_input_planes(fen):
+def all_input_planes(fen) -> np.ndarray:
     current_aux_planes = aux_planes(fen)
 
     history_both = to_planes(fen)

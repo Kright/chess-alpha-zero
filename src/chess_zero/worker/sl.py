@@ -10,6 +10,7 @@ from threading import Thread
 from time import time
 
 import chess.pgn
+from typing import List
 
 from chess_zero.agent.player_chess import ChessPlayer
 from chess_zero.config import Config
@@ -36,6 +37,7 @@ class SupervisedLearningWorker:
             to a chess move. The move that was taken in the actual game is given a value (based on
             the player elo), all other moves are given a 0.
     """
+
     def __init__(self, config: Config):
         """
         :param config:
@@ -53,7 +55,8 @@ class SupervisedLearningWorker:
         start_time = time()
         with ProcessPoolExecutor(max_workers=7) as executor:
             games = self.get_games_from_all_files()
-            for res in as_completed([executor.submit(get_buffer, self.config, game) for game in games]): #poisoned reference (memleak)
+            for res in as_completed(
+                    [executor.submit(get_buffer, self.config, game) for game in games]):  # poisoned reference (memleak)
                 self.idx += 1
                 env, data = res.result()
                 self.save_data(data)
@@ -67,7 +70,7 @@ class SupervisedLearningWorker:
         if len(self.buffer) > 0:
             self.flush_buffer()
 
-    def get_games_from_all_files(self):
+    def get_games_from_all_files(self) -> List[chess.pgn.Game]:
         """
         Loads game data from pgn files
         :return list(chess.pgn.Game): the games
@@ -99,14 +102,13 @@ class SupervisedLearningWorker:
         game_id = datetime.now().strftime("%Y%m%d-%H%M%S.%f")
         path = os.path.join(rc.play_data_dir, rc.play_data_filename_tmpl % game_id)
         logger.info(f"save play data to {path}")
-        thread = Thread(target = write_game_data_to_file, args=(path, self.buffer))
+        thread = Thread(target=write_game_data_to_file, args=(path, self.buffer))
         thread.start()
         self.buffer = []
 
 
-def get_games_from_file(filename):
+def get_games_from_file(filename: str) -> List[chess.pgn.Game]:
     """
-
     :param str filename: file containing the pgn game data
     :return list(pgn.Game): chess games in that file
     """
@@ -126,7 +128,7 @@ def clip_elo_policy(config, elo):
     # 0 until min_elo, 1 after max_elo, linear in between
 
 
-def get_buffer(config, game) -> (ChessEnv, list):
+def get_buffer(config, game: chess.pgn.Game) -> (ChessEnv, List[float]):
     """
     Gets data to load into the buffer by playing a game using PGN data.
     :param Config config: config to use to play the game
@@ -137,10 +139,11 @@ def get_buffer(config, game) -> (ChessEnv, list):
     white = ChessPlayer(config, dummy=True)
     black = ChessPlayer(config, dummy=True)
     result = game.headers["Result"]
+
     white_elo, black_elo = int(game.headers["WhiteElo"]), int(game.headers["BlackElo"])
     white_weight = clip_elo_policy(config, white_elo)
     black_weight = clip_elo_policy(config, black_elo)
-    
+
     actions = []
     while not game.is_end():
         game = game.variation(0)
@@ -148,9 +151,9 @@ def get_buffer(config, game) -> (ChessEnv, list):
     k = 0
     while not env.done and k < len(actions):
         if env.white_to_move:
-            action = white.sl_action(env.observation, actions[k], weight=white_weight) #ignore=True
+            action = white.sl_action(env.observation, actions[k], weight=white_weight)  # ignore=True
         else:
-            action = black.sl_action(env.observation, actions[k], weight=black_weight) #ignore=True
+            action = black.sl_action(env.observation, actions[k], weight=black_weight)  # ignore=True
         env.step(action, False)
         k += 1
 
