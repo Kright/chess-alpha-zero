@@ -8,9 +8,10 @@ import json
 import os
 from logging import getLogger
 
+from keras.layers import LeakyReLU, Concatenate
 from keras.engine.topology import Input
 from keras.engine.training import Model
-from keras.layers.convolutional import Conv2D
+from keras.layers.convolutional import Conv2D, SeparableConv2D
 from keras.layers.core import Activation, Dense, Flatten
 from keras.layers.merge import Add
 from keras.layers.normalization import BatchNormalization
@@ -18,6 +19,7 @@ from keras.regularizers import l2
 
 from chess_zero.agent.api_chess import ChessModelAPI
 from chess_zero.config import Config
+from typing import Tuple
 
 # noinspection PyPep8Naming
 
@@ -35,13 +37,14 @@ class ChessModel:
         :ivar digest: basically just a hash of the file containing the weights being used by this model
         :ivar ChessModelAPI api: the api to use to listen for and then return this models predictions (on a pipe).
     """
+
     def __init__(self, config: Config):
-        self.config = config
-        self.model = None  # type: Model
+        self.config: Config = config
+        self.model: Model = None
         self.digest = None
         self.api = None
 
-    def get_pipes(self, num = 1):
+    def get_pipes(self, num=1):
         """
         Creates a list of pipes on which observations of the game state will be listened for. Whenever
         an observation comes in, returns policy and value network predictions on that pipe.
@@ -64,7 +67,7 @@ class ChessModel:
         # (batch, channels, height, width)
         x = Conv2D(filters=mc.cnn_filter_num, kernel_size=mc.cnn_first_filter_size, padding="same",
                    data_format="channels_first", use_bias=False, kernel_regularizer=l2(mc.l2_reg),
-                   name="input_conv-"+str(mc.cnn_first_filter_size)+"-"+str(mc.cnn_filter_num))(x)
+                   name="input_conv-" + str(mc.cnn_first_filter_size) + "-" + str(mc.cnn_filter_num))(x)
         x = BatchNormalization(axis=1, name="input_batchnorm")(x)
         x = Activation("relu", name="input_relu")(x)
 
@@ -72,21 +75,24 @@ class ChessModel:
             x = self._build_residual_block(x, i + 1)
 
         res_out = x
-        
+
         # for policy output
-        x = Conv2D(filters=2, kernel_size=1, data_format="channels_first", use_bias=False, kernel_regularizer=l2(mc.l2_reg),
-                    name="policy_conv-1-2")(res_out)
+        x = Conv2D(filters=2, kernel_size=1, data_format="channels_first", use_bias=False,
+                   kernel_regularizer=l2(mc.l2_reg),
+                   name="policy_conv-1-2")(res_out)
         x = BatchNormalization(axis=1, name="policy_batchnorm")(x)
         x = Activation("relu", name="policy_relu")(x)
         x = Flatten(name="policy_flatten")(x)
         # no output for 'pass'
-        policy_out = Dense(self.config.n_labels, kernel_regularizer=l2(mc.l2_reg), activation="softmax", name="policy_out")(x)
+        policy_out = Dense(self.config.n_labels, kernel_regularizer=l2(mc.l2_reg), activation="softmax",
+                           name="policy_out")(x)
 
         # for value output
-        x = Conv2D(filters=4, kernel_size=1, data_format="channels_first", use_bias=False, kernel_regularizer=l2(mc.l2_reg),
-                    name="value_conv-1-4")(res_out)
+        x = Conv2D(filters=4, kernel_size=1, data_format="channels_first", use_bias=False,
+                   kernel_regularizer=l2(mc.l2_reg),
+                   name="value_conv-1-4")(res_out)
         x = BatchNormalization(axis=1, name="value_batchnorm")(x)
-        x = Activation("relu",name="value_relu")(x)
+        x = Activation("relu", name="value_relu")(x)
         x = Flatten(name="value_flatten")(x)
         x = Dense(mc.value_fc_size, kernel_regularizer=l2(mc.l2_reg), activation="relu", name="value_dense")(x)
         value_out = Dense(1, kernel_regularizer=l2(mc.l2_reg), activation="tanh", name="value_out")(x)
@@ -96,18 +102,18 @@ class ChessModel:
     def _build_residual_block(self, x, index):
         mc = self.config.model
         in_x = x
-        res_name = "res"+str(index)
+        res_name = "res" + str(index)
         x = Conv2D(filters=mc.cnn_filter_num, kernel_size=mc.cnn_filter_size, padding="same",
-                   data_format="channels_first", use_bias=False, kernel_regularizer=l2(mc.l2_reg), 
-                   name=res_name+"_conv1-"+str(mc.cnn_filter_size)+"-"+str(mc.cnn_filter_num))(x)
-        x = BatchNormalization(axis=1, name=res_name+"_batchnorm1")(x)
-        x = Activation("relu",name=res_name+"_relu1")(x)
+                   data_format="channels_first", use_bias=False, kernel_regularizer=l2(mc.l2_reg),
+                   name=res_name + "_conv1-" + str(mc.cnn_filter_size) + "-" + str(mc.cnn_filter_num))(x)
+        x = BatchNormalization(axis=1, name=res_name + "_batchnorm1")(x)
+        x = Activation("relu", name=res_name + "_relu1")(x)
         x = Conv2D(filters=mc.cnn_filter_num, kernel_size=mc.cnn_filter_size, padding="same",
-                   data_format="channels_first", use_bias=False, kernel_regularizer=l2(mc.l2_reg), 
-                   name=res_name+"_conv2-"+str(mc.cnn_filter_size)+"-"+str(mc.cnn_filter_num))(x)
-        x = BatchNormalization(axis=1, name="res"+str(index)+"_batchnorm2")(x)
-        x = Add(name=res_name+"_add")([in_x, x])
-        x = Activation("relu", name=res_name+"_relu2")(x)
+                   data_format="channels_first", use_bias=False, kernel_regularizer=l2(mc.l2_reg),
+                   name=res_name + "_conv2-" + str(mc.cnn_filter_size) + "-" + str(mc.cnn_filter_num))(x)
+        x = BatchNormalization(axis=1, name="res" + str(index) + "_batchnorm2")(x)
+        x = Add(name=res_name + "_add")([in_x, x])
+        x = Activation("relu", name=res_name + "_relu2")(x)
         return x
 
     @staticmethod
@@ -184,3 +190,64 @@ class ChessModel:
                 ftp_connection.quit()
             except:
                 pass
+
+
+class BetterChessModel(ChessModel):
+    def __init__(self, config: Config):
+        super().__init__(config)
+
+        self.data_format: str = "channels_first"
+        self.blocks_count: int = 6
+        self.channels: int = 128
+        self.conv_along_axis_channels: int = 16
+        self.conv15_channels: int = 4
+        self.conv5_channels = self.channels - self.conv_along_axis_channels * 2 - self.conv15_channels
+        self.leaky_alpha = 0.3
+
+    def build(self):
+        mc = self.config.model
+
+        in_x = x = Input((18, 8, 8))
+        x = self.pointwise_conv(x, self.channels)
+
+        for i in range(self.blocks_count):
+            x = self.custom_layer(x)
+
+        res_out = x
+
+        # for policy output
+        x = self.pointwise_conv(res_out, 2)
+        x = Flatten(name="policy_flatten")(x)
+        policy_out = Dense(self.config.n_labels, activation="softmax", name="policy_out")(x)
+
+        # for value output
+        x = self.pointwise_conv(res_out, 4)
+
+        x = Flatten(name="value_flatten")(x)
+        x = Dense(mc.value_fc_size, name="value_dense")(x)
+        x = LeakyReLU(self.leaky_alpha)(x)
+        value_out = Dense(1, activation="tanh", name="value_out")(x)
+
+        self.model = Model(in_x, [policy_out, value_out], name="chess_model")
+
+    def pointwise_conv(self, layer, channels: int):
+        layer = Conv2D(channels, 1, data_format=self.data_format, padding="same", use_bias=False)(layer)
+        layer = BatchNormalization(axis=1)(layer)
+        return LeakyReLU(alpha=self.leaky_alpha)(layer)
+
+    def separable_conv(self, layer, channels, kernel):
+        layer = SeparableConv2D(channels, kernel, data_format=self.data_format, padding="same", use_bias=False)(layer)
+        layer = BatchNormalization(axis=1)(layer)
+        return LeakyReLU(self.leaky_alpha)(layer)
+
+    def pointwise_and_separable(self, layer, channels: int, kernel: Tuple[int, int]):
+        layer = self.pointwise_conv(layer, channels)(layer)
+        return self.separable_conv(layer, channels, kernel)(layer)
+
+    def custom_layer(self, previous):
+        conv5 = self.separable_conv(previous, self.conv5_channels, (5, 5))
+        conv_along1 = self.pointwise_and_separable(previous, self.conv_along_axis_channels, (1, 15))
+        conv_along2 = self.pointwise_and_separable(previous, self.conv_along_axis_channels, (15, 1))
+        conv15 = self.pointwise_and_separable(previous, self.conv15_channels, (15, 15))
+
+        return Concatenate(axis=1)([conv5, conv15, conv_along1, conv_along2])
